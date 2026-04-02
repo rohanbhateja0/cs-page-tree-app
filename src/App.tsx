@@ -7,15 +7,11 @@ import {
 } from "./buildUrlTree";
 
 type ContentTypeOption = { uid: string; title?: string };
-type StackWithEntries = {
-  getEntries: (
-    contentTypeUid: string,
-    params?: {
-      limit?: number;
-      skip?: number;
-      include_unpublished?: boolean;
-    }
-  ) => Promise<unknown>;
+type AppSdkWithApi = {
+  api: (url: string, options?: RequestInit) => Promise<Response>;
+  endpoints: {
+    CMA: string;
+  };
 };
 
 function normalizeEntryList(raw: unknown): CmsEntry[] {
@@ -48,20 +44,33 @@ function normalizeContentTypes(raw: unknown): ContentTypeOption[] {
   return [];
 }
 
-/** Retrieve all entries for a content type via the App SDK stack object. */
+/** Retrieve all entries for a content type via the App SDK CMA bridge. */
 async function fetchAllEntries(
-  stack: StackWithEntries,
+  appSdk: AppSdkWithApi,
   contentTypeUid: string
 ): Promise<CmsEntry[]> {
   const pageSize = 100;
   const all: CmsEntry[] = [];
   for (let skip = 0; skip < 50_000; skip += pageSize) {
-    const res = await stack.getEntries(contentTypeUid, {
-      limit: pageSize,
-      skip,
-      include_unpublished: true,
+    const url = new URL(
+      `${appSdk.endpoints.CMA}/v3/content_types/${encodeURIComponent(contentTypeUid)}/entries`
+    );
+    url.searchParams.set("limit", String(pageSize));
+    url.searchParams.set("skip", String(skip));
+    url.searchParams.set("include_unpublished", "true");
+
+    const response = await appSdk.api(url.toString(), {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+      },
     });
-    const batch = normalizeEntryList(res);
+    if (!response.ok) {
+      throw new Error(`Failed to load entries for "${contentTypeUid}" (${response.status})`);
+    }
+
+    const payload = (await response.json()) as unknown;
+    const batch = normalizeEntryList(payload);
     all.push(...batch);
     if (batch.length < pageSize) break;
   }
@@ -157,7 +166,7 @@ export default function App() {
       }
 
       const stack = sdk.stack;
-      const stackWithEntries = stack as unknown as StackWithEntries;
+      const appSdkWithApi = sdk as unknown as AppSdkWithApi;
       const stackData = stack.getData?.();
       if (stackData && typeof stackData === "object" && "name" in stackData) {
         setStackLabel(String((stackData as { name?: string }).name ?? ""));
@@ -174,7 +183,7 @@ export default function App() {
         setSelectedCt(ctUid);
       }
 
-      const entries = await fetchAllEntries(stackWithEntries, ctUid);
+      const entries = await fetchAllEntries(appSdkWithApi, ctUid);
       setEntryCount(entries.length);
       setTree(buildTreeFromUrls(entries));
     } catch (e) {
