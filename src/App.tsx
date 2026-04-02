@@ -7,6 +7,16 @@ import {
 } from "./buildUrlTree";
 
 type ContentTypeOption = { uid: string; title?: string };
+type StackWithEntries = {
+  getEntries: (
+    contentTypeUid: string,
+    params?: {
+      limit?: number;
+      skip?: number;
+      include_unpublished?: boolean;
+    }
+  ) => Promise<unknown>;
+};
 
 function normalizeEntryList(raw: unknown): CmsEntry[] {
   if (Array.isArray(raw)) {
@@ -17,6 +27,9 @@ function normalizeEntryList(raw: unknown): CmsEntry[] {
   }
   if (raw && typeof raw === "object" && Array.isArray((raw as { entries?: unknown }).entries)) {
     return normalizeEntryList((raw as { entries: unknown }).entries);
+  }
+  if (raw && typeof raw === "object" && Array.isArray((raw as { items?: unknown }).items)) {
+    return normalizeEntryList((raw as { items: unknown }).items);
   }
   return [];
 }
@@ -35,25 +48,15 @@ function normalizeContentTypes(raw: unknown): ContentTypeOption[] {
   return [];
 }
 
-/** Stack.search is the supported way to list entries in app-sdk 2.x (getEntries is not in typings). */
+/** Retrieve all entries for a content type via the App SDK stack object. */
 async function fetchAllEntries(
-  stack: {
-    search: (q: {
-      type: "entries";
-      query: Record<string, string>;
-      limit?: number;
-      skip?: number;
-      include_unpublished?: boolean;
-    }) => Promise<unknown>;
-  },
+  stack: StackWithEntries,
   contentTypeUid: string
 ): Promise<CmsEntry[]> {
   const pageSize = 100;
   const all: CmsEntry[] = [];
   for (let skip = 0; skip < 50_000; skip += pageSize) {
-    const res = await stack.search({
-      type: "entries",
-      query: { content_type: contentTypeUid },
+    const res = await stack.getEntries(contentTypeUid, {
       limit: pageSize,
       skip,
       include_unpublished: true,
@@ -71,7 +74,7 @@ function TreeBranch({ node, depth }: { node: TreeNode; depth: number }) {
   if (node.segment === "" && node.children.length === 0 && node.entries.length === 0) {
     return (
       <p style={{ marginLeft: pad, color: "#666" }}>
-        No entries with a <code>url</code> field for this content type.
+        No entries were returned for this content type.
       </p>
     );
   }
@@ -138,6 +141,7 @@ export default function App() {
   const [contentTypes, setContentTypes] = useState<ContentTypeOption[]>([]);
   const [selectedCt, setSelectedCt] = useState<string>("page");
   const [tree, setTree] = useState<TreeNode | null>(null);
+  const [entryCount, setEntryCount] = useState<number>(0);
 
   const loadTypesAndEntries = useCallback(async () => {
     setLoading(true);
@@ -153,6 +157,7 @@ export default function App() {
       }
 
       const stack = sdk.stack;
+      const stackWithEntries = stack as unknown as StackWithEntries;
       const stackData = stack.getData?.();
       if (stackData && typeof stackData === "object" && "name" in stackData) {
         setStackLabel(String((stackData as { name?: string }).name ?? ""));
@@ -169,7 +174,8 @@ export default function App() {
         setSelectedCt(ctUid);
       }
 
-      const entries = await fetchAllEntries(stack, ctUid);
+      const entries = await fetchAllEntries(stackWithEntries, ctUid);
+      setEntryCount(entries.length);
       setTree(buildTreeFromUrls(entries));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -214,6 +220,11 @@ export default function App() {
         {stackLabel ? (
           <p style={{ margin: "8px 0 0", fontSize: "0.9rem", color: "#666" }}>
             Stack: {stackLabel}
+          </p>
+        ) : null}
+        {!loading && !error ? (
+          <p style={{ margin: "8px 0 0", fontSize: "0.9rem", color: "#666" }}>
+            Selected content type: <code>{selectedCt}</code> | Entries returned: {entryCount}
           </p>
         ) : null}
       </header>
